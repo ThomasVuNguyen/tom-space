@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { APP_BY_ID, APPS, type AppId } from "./catalog";
+import { appById, type AppDef, type AppId } from "./catalog";
+import { fetchApps, invalidateCache } from "./api";
 import { loadSnapshot, saveSnapshot } from "./storage";
 import {
   closeTab,
@@ -36,6 +37,12 @@ function slotFor(tab: Tab | undefined, paneId: string): "full" | "left" | "right
   return "hidden";
 }
 
+function statusDot(status: string) {
+  if (status.includes("healthy")) return "dot green";
+  if (status.includes("exited") || status.includes("unhealthy")) return "dot red";
+  return "dot yellow";
+}
+
 export function App() {
   const boot = useMemo(loadSnapshot, []);
   const [tabs, setTabs] = useState<Tab[]>(boot.tabs);
@@ -44,6 +51,9 @@ export function App() {
   const [picked, setPicked] = useState(0);
   const [menu, setMenu] = useState<Menu>(null);
   const [drag, setDrag] = useState<Drag>(null);
+  const [apps, setApps] = useState<AppDef[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const wellRef = useRef<HTMLDivElement>(null);
   const tabsRef = useRef(tabs);
@@ -52,12 +62,45 @@ export function App() {
   tabsRef.current = tabs;
   activeRef.current = activeId;
 
+  const byId = useMemo(() => appById(apps), [apps]);
+  const nameOf = (id: AppId) => byId[id]?.name ?? id;
   const active = tabs.find((t) => t.id === activeId) ?? tabs[0];
-  const filtered = APPS.filter((app) => {
-    const q = query.trim().toLowerCase();
-    if (!q) return true;
-    return app.name.toLowerCase().includes(q) || app.host.toLowerCase().includes(q);
-  });
+
+  // Group and filter apps
+  const appEntries = apps.filter((a) => a.category === "app");
+  const serviceEntries = apps.filter((a) => a.category === "service");
+
+  const q = query.trim().toLowerCase();
+  const filteredApps = appEntries.filter(
+    (app) => !q || app.name.toLowerCase().includes(q) || app.host.toLowerCase().includes(q),
+  );
+  const filteredServices = serviceEntries.filter(
+    (app) => !q || app.name.toLowerCase().includes(q) || app.host.toLowerCase().includes(q),
+  );
+  const allFiltered = [...filteredApps, ...filteredServices];
+
+  // Fetch apps from Coolify API
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    fetchApps()
+      .then((data) => {
+        if (!cancelled) {
+          setApps(data);
+          setLoading(false);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Failed to load apps");
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     saveSnapshot(tabs, activeId);
@@ -91,13 +134,13 @@ export function App() {
       if (current?.kind !== "welcome") return;
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setPicked((i) => Math.min(i + 1, Math.max(filtered.length - 1, 0)));
+        setPicked((i) => Math.min(i + 1, Math.max(allFiltered.length - 1, 0)));
       }
       if (e.key === "ArrowUp") {
         e.preventDefault();
         setPicked((i) => Math.max(i - 1, 0));
       }
-      if (e.key === "Enter" && filtered[picked]) openApp(filtered[picked].id);
+      if (e.key === "Enter" && allFiltered[picked]) openApp(allFiltered[picked].id);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -145,12 +188,28 @@ export function App() {
   }
 
   function openOutside(tab: Tab) {
-    if (tab.kind === "app") window.open(APP_BY_ID[tab.pane.appId].url, "_blank", "noopener");
+    if (tab.kind === "app" && byId[tab.pane.appId])
+      window.open(byId[tab.pane.appId].url, "_blank", "noopener");
     if (tab.kind === "split") {
-      window.open(APP_BY_ID[tab.left.appId].url, "_blank", "noopener");
-      window.open(APP_BY_ID[tab.right.appId].url, "_blank", "noopener");
+      if (byId[tab.left.appId]) window.open(byId[tab.left.appId].url, "_blank", "noopener");
+      if (byId[tab.right.appId]) window.open(byId[tab.right.appId].url, "_blank", "noopener");
     }
     setMenu(null);
+  }
+
+  function onRefresh() {
+    invalidateCache();
+    setLoading(true);
+    setError(null);
+    fetchApps()
+      .then((data) => {
+        setApps(data);
+        setLoading(false);
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : "Failed to load apps");
+        setLoading(false);
+      });
   }
 
   function dropSide(x: number, y: number, draggedId: string): "left" | "right" | null {
@@ -209,6 +268,25 @@ export function App() {
 
   const panes = allPanes(tabs);
 
+  function renderAppRow(app: AppDef, globalIndex: number) {
+    return (
+      <button
+        key={app.id}
+        className={`row${globalIndex === picked ? " active" : ""}`}
+        onMouseEnter={() => setPicked(globalIndex)}
+        onClick={() => openApp(app.id)}
+      >
+        <img src={app.icon} alt="" />
+        <span className="copy">
+          <strong>{app.name}</strong>
+          <span>{app.host}</span>
+        </span>
+        <span className={statusDot(app.status)} title={app.status} />
+        {globalIndex === picked && <span className="enter">↵</span>}
+      </button>
+    );
+  }
+
   return (
     <div className="shell">
       <div className="room">
@@ -231,19 +309,19 @@ export function App() {
                   setMenu({ x: e.clientX, y: e.clientY, tabId: tab.id });
                 }}
               >
-                {tab.kind === "app" && (
-                  <img src={APP_BY_ID[tab.pane.appId].icon} alt="" />
+                {tab.kind === "app" && byId[tab.pane.appId] && (
+                  <img src={byId[tab.pane.appId].icon} alt="" />
                 )}
                 {tab.kind === "split" && (
                   <>
-                    <img src={APP_BY_ID[tab.left.appId].icon} alt="" />
-                    <img src={APP_BY_ID[tab.right.appId].icon} alt="" />
+                    {byId[tab.left.appId] && <img src={byId[tab.left.appId].icon} alt="" />}
+                    {byId[tab.right.appId] && <img src={byId[tab.right.appId].icon} alt="" />}
                   </>
                 )}
-                <span>{tabTitle(tab, (id) => APP_BY_ID[id].name)}</span>
+                <span>{tabTitle(tab, nameOf)}</span>
                 <button
                   className="x"
-                  aria-label={`Close ${tabTitle(tab, (id) => APP_BY_ID[id].name)}`}
+                  aria-label={`Close ${tabTitle(tab, nameOf)}`}
                   onPointerDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -284,28 +362,50 @@ export function App() {
                     onChange={(e) => setQuery(e.target.value)}
                     autoFocus
                   />
-                  <span className="hint">cmd</span>
+                  <button className="refresh-btn" onClick={onRefresh} title="Refresh app list" type="button">
+                    ↻
+                  </button>
                 </label>
-                <div className="list">
-                  {filtered.length === 0 && (
-                    <div className="empty">Nothing named like that.</div>
-                  )}
-                  {filtered.map((app, i) => (
-                    <button
-                      key={app.id}
-                      className={`row${i === picked ? " active" : ""}`}
-                      onMouseEnter={() => setPicked(i)}
-                      onClick={() => openApp(app.id)}
-                    >
-                      <img src={app.icon} alt="" />
-                      <span className="copy">
-                        <strong>{app.name}</strong>
-                        <span>{app.host}</span>
-                      </span>
-                      {i === picked && <span className="enter">↵</span>}
-                    </button>
-                  ))}
-                </div>
+
+                {loading && (
+                  <div className="loading">
+                    <div className="spinner" />
+                    <span>Loading from Coolify…</span>
+                  </div>
+                )}
+
+                {error && (
+                  <div className="error-msg">
+                    <span>⚠ {error}</span>
+                    <button onClick={onRefresh}>Retry</button>
+                  </div>
+                )}
+
+                {!loading && !error && (
+                  <div className="list">
+                    {allFiltered.length === 0 && (
+                      <div className="empty">Nothing named like that.</div>
+                    )}
+
+                    {filteredApps.length > 0 && (
+                      <>
+                        {(filteredServices.length > 0 || q) && (
+                          <div className="section-label">Apps</div>
+                        )}
+                        {filteredApps.map((app, i) => renderAppRow(app, i))}
+                      </>
+                    )}
+
+                    {filteredServices.length > 0 && (
+                      <>
+                        <div className="section-label">Services</div>
+                        {filteredServices.map((app, i) =>
+                          renderAppRow(app, filteredApps.length + i),
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -317,15 +417,25 @@ export function App() {
           )}
 
           {panes.map((pane) => {
-            const app = APP_BY_ID[pane.appId];
+            const app = byId[pane.appId];
             const slot = slotFor(active, pane.paneId);
+            if (!app) {
+              return (
+                <div key={pane.paneId} className={`live ${slot}`}>
+                  <div className="blocked">
+                    <h2>App not found</h2>
+                    <p>This app may have been removed from Coolify.</p>
+                  </div>
+                </div>
+              );
+            }
             if (!app.embed) {
               return (
                 <div key={pane.paneId} className={`live ${slot}`}>
                   <div className="blocked">
                     <p>{app.host}</p>
                     <h2>{app.name}</h2>
-                    <p>This one won’t sit in a pane.</p>
+                    <p>This one won't sit in a pane.</p>
                     <button onClick={() => window.open(app.url, "_blank", "noopener")}>
                       Open outside
                     </button>
@@ -355,13 +465,19 @@ export function App() {
 
       {drag && dragTab && (
         <div className="drag-ghost" style={{ left: drag.x + 12, top: drag.y + 12 }}>
-          {dragTab.kind === "app" && <img src={APP_BY_ID[dragTab.pane.appId].icon} alt="" />}
-          <span>{tabTitle(dragTab, (id) => APP_BY_ID[id].name)}</span>
+          {dragTab.kind === "app" && byId[dragTab.pane.appId] && (
+            <img src={byId[dragTab.pane.appId].icon} alt="" />
+          )}
+          <span>{tabTitle(dragTab, nameOf)}</span>
         </div>
       )}
 
       {menu && (
-        <div className="menu" style={{ left: menu.x, top: menu.y }} onClick={(e) => e.stopPropagation()}>
+        <div
+          className="menu"
+          style={{ left: menu.x, top: menu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
           {tabs.find((t) => t.id === menu.tabId)?.kind === "split" && (
             <button onClick={() => onSeparate(menu.tabId)}>Separate tabs</button>
           )}
