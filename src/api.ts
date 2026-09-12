@@ -57,13 +57,16 @@ export async function fetchApps(): Promise<AppDef[]> {
 
   const apps: CoolifyApp[] =
     appsRes.status === "fulfilled" && appsRes.value.ok
-      ? ((await appsRes.value.json()) as { data?: CoolifyApp[] }).data ??
-        (await Promise.resolve([] as CoolifyApp[]))
+      ? await appsRes.value.json().then((json: CoolifyApp[] | { data?: CoolifyApp[] }) =>
+          Array.isArray(json) ? json : (json.data ?? []),
+        )
       : [];
 
   const services: CoolifyService[] =
     servicesRes.status === "fulfilled" && servicesRes.value.ok
-      ? await servicesRes.value.json()
+      ? await servicesRes.value.json().then((json: CoolifyService[] | { data?: CoolifyService[] }) =>
+          Array.isArray(json) ? json : (json.data ?? []),
+        )
       : [];
 
   const result: AppDef[] = [];
