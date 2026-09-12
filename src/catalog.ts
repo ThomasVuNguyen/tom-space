@@ -30,7 +30,7 @@ export const APPS: AppDef[] = [
     host: "inbox.comfyspace.tech",
     url: "https://inbox.comfyspace.tech",
     icon: "/brand/inbox.png",
-    embed: true,
+    embed: false,
   },
   {
     id: "content",
