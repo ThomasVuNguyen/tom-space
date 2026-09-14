@@ -72,10 +72,18 @@ export function App() {
 
   const q = query.trim().toLowerCase();
   const filteredApps = appEntries.filter(
-    (app) => !q || app.name.toLowerCase().includes(q) || app.host.toLowerCase().includes(q),
+    (app) =>
+      !q ||
+      app.name.toLowerCase().includes(q) ||
+      app.host.toLowerCase().includes(q) ||
+      (app.server && app.server.toLowerCase().includes(q)),
   );
   const filteredServices = serviceEntries.filter(
-    (app) => !q || app.name.toLowerCase().includes(q) || app.host.toLowerCase().includes(q),
+    (app) =>
+      !q ||
+      app.name.toLowerCase().includes(q) ||
+      app.host.toLowerCase().includes(q) ||
+      (app.server && app.server.toLowerCase().includes(q)),
   );
   const allFiltered = [...filteredApps, ...filteredServices];
 
@@ -279,7 +287,10 @@ export function App() {
         <img src={app.icon} alt="" />
         <span className="copy">
           <strong>{app.name}</strong>
-          <span>{app.host}</span>
+          <span className="meta">
+            <span className="host-text">{app.host}</span>
+            {app.server && <span className="server-badge">{app.server}</span>}
+          </span>
         </span>
         <span className={statusDot(app.status)} title={app.status} />
         {globalIndex === picked && <span className="enter">↵</span>}

@@ -9,6 +9,7 @@ export type AppDef = {
   embed: boolean;
   category: "app" | "service";
   status: string;
+  server?: string;
 };
 
 /* ── Known brand icons (existing PNGs in /brand/) ── */

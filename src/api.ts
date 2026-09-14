@@ -17,6 +17,16 @@ type CoolifyService = {
   fqdn?: string | null;
 };
 
+type CoolifyServer = {
+  uuid: string;
+  name: string;
+};
+
+type CoolifyResource = {
+  uuid?: string;
+  name?: string;
+};
+
 /* ── Helpers ── */
 
 /** Pick the first http(s) domain from a comma-separated fqdn list */
@@ -50,9 +60,10 @@ let cache: AppDef[] | null = null;
 export async function fetchApps(): Promise<AppDef[]> {
   if (cache) return cache;
 
-  const [appsRes, servicesRes] = await Promise.allSettled([
+  const [appsRes, servicesRes, serversRes] = await Promise.allSettled([
     fetch("/api/coolify/applications"),
     fetch("/api/coolify/services"),
+    fetch("/api/coolify/servers"),
   ]);
 
   const apps: CoolifyApp[] =
@@ -69,11 +80,46 @@ export async function fetchApps(): Promise<AppDef[]> {
         )
       : [];
 
+  // Map resources to their host server
+  const serverByUuid: Record<string, string> = {};
+  const serverByName: Record<string, string> = {};
+
+  if (serversRes.status === "fulfilled" && serversRes.value.ok) {
+    const servers: CoolifyServer[] = await serversRes.value
+      .json()
+      .then((json: CoolifyServer[] | { data?: CoolifyServer[] }) =>
+        Array.isArray(json) ? json : (json.data ?? []),
+      )
+      .catch(() => []);
+
+    const resourceResults = await Promise.allSettled(
+      servers.map(async (server) => {
+        const res = await fetch(`/api/coolify/servers/${server.uuid}/resources`, {
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!res.ok) return { serverName: server.name, resources: [] };
+        const json = await res.json();
+        const resources: CoolifyResource[] = Array.isArray(json) ? json : (json.data ?? []);
+        return { serverName: server.name, resources };
+      }),
+    );
+
+    for (const r of resourceResults) {
+      if (r.status === "fulfilled") {
+        for (const item of r.value.resources) {
+          if (item.uuid) serverByUuid[item.uuid] = r.value.serverName;
+          if (item.name) serverByName[item.name.toLowerCase()] = r.value.serverName;
+        }
+      }
+    }
+  }
+
   const result: AppDef[] = [];
 
   for (const a of apps) {
     if (!a.fqdn) continue;
     const id = toId(a.name);
+    const server = serverByUuid[a.uuid] || serverByName[a.name.toLowerCase()];
     result.push({
       id,
       name: a.name,
@@ -83,12 +129,14 @@ export async function fetchApps(): Promise<AppDef[]> {
       embed: true,
       category: "app",
       status: a.status,
+      ...(server ? { server } : {}),
     });
   }
 
   for (const s of services) {
     if (!s.fqdn) continue;
     const id = toId(s.name);
+    const server = serverByUuid[s.uuid] || serverByName[s.name.toLowerCase()];
     result.push({
       id,
       name: s.name,
@@ -98,6 +146,7 @@ export async function fetchApps(): Promise<AppDef[]> {
       embed: true,
       category: "service",
       status: s.status,
+      ...(server ? { server } : {}),
     });
   }
 
