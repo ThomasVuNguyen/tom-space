@@ -12,6 +12,28 @@ export type AppDef = {
   server?: string;
 };
 
+export type ServerResource = {
+  uuid: string;
+  name: string;
+  type: string;
+  status: string;
+};
+
+export type ServerStats = {
+  uuid: string;
+  name: string;
+  ip: string;
+  isReachable: boolean;
+  totalResources: number;
+  appsCount: number;
+  dbCount: number;
+  servicesCount: number;
+  healthyCount: number;
+  unhealthyCount: number;
+  exitedCount: number;
+  resources: ServerResource[];
+};
+
 /* ── Known brand icons (existing PNGs in /brand/) ── */
 
 const BRAND_ICONS: Record<string, string> = {

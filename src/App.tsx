@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { appById, type AppDef, type AppId } from "./catalog";
-import { fetchApps, invalidateCache } from "./api";
+import { appById, type AppDef, type AppId, type ServerStats } from "./catalog";
+import { fetchCatalog, invalidateCache } from "./api";
 import { loadSnapshot, saveSnapshot } from "./storage";
 import {
   closeTab,
@@ -52,6 +52,9 @@ export function App() {
   const [menu, setMenu] = useState<Menu>(null);
   const [drag, setDrag] = useState<Drag>(null);
   const [apps, setApps] = useState<AppDef[]>([]);
+  const [servers, setServers] = useState<ServerStats[]>([]);
+  const [viewMode, setViewMode] = useState<"apps" | "servers">("apps");
+  const [expandedServer, setExpandedServer] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -87,21 +90,30 @@ export function App() {
   );
   const allFiltered = [...filteredApps, ...filteredServices];
 
-  // Fetch apps from Coolify API
+  const filteredServers = servers.filter(
+    (s) =>
+      !q ||
+      s.name.toLowerCase().includes(q) ||
+      s.ip.toLowerCase().includes(q) ||
+      s.resources.some((r) => r.name.toLowerCase().includes(q)),
+  );
+
+  // Fetch apps and server infrastructure from Coolify API
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    fetchApps()
+    fetchCatalog()
       .then((data) => {
         if (!cancelled) {
-          setApps(data);
+          setApps(data.apps);
+          setServers(data.servers);
           setLoading(false);
         }
       })
       .catch((err) => {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to load apps");
+          setError(err instanceof Error ? err.message : "Failed to load data");
           setLoading(false);
         }
       });
@@ -139,7 +151,7 @@ export function App() {
         if (current?.kind === "welcome") searchRef.current?.focus();
         return;
       }
-      if (current?.kind !== "welcome") return;
+      if (current?.kind !== "welcome" || viewMode !== "apps") return;
       if (e.key === "ArrowDown") {
         e.preventDefault();
         setPicked((i) => Math.min(i + 1, Math.max(allFiltered.length - 1, 0)));
@@ -209,13 +221,14 @@ export function App() {
     invalidateCache();
     setLoading(true);
     setError(null);
-    fetchApps()
+    fetchCatalog()
       .then((data) => {
-        setApps(data);
+        setApps(data.apps);
+        setServers(data.servers);
         setLoading(false);
       })
       .catch((err) => {
-        setError(err instanceof Error ? err.message : "Failed to load apps");
+        setError(err instanceof Error ? err.message : "Failed to load data");
         setLoading(false);
       });
   }
@@ -369,14 +382,41 @@ export function App() {
                   <input
                     ref={searchRef}
                     value={query}
-                    placeholder="Jump to an app"
+                    placeholder={viewMode === "apps" ? "Jump to an app" : "Filter servers or workloads"}
                     onChange={(e) => setQuery(e.target.value)}
                     autoFocus
                   />
-                  <button className="refresh-btn" onClick={onRefresh} title="Refresh app list" type="button">
+                  <button className="refresh-btn" onClick={onRefresh} title="Refresh data" type="button">
                     ↻
                   </button>
                 </label>
+
+                <div className="view-switcher" role="tablist">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={viewMode === "apps"}
+                    className={`switch-btn${viewMode === "apps" ? " active" : ""}`}
+                    onClick={() => {
+                      setViewMode("apps");
+                      setQuery("");
+                    }}
+                  >
+                    Apps {apps.length > 0 && <span className="switch-count">{apps.length}</span>}
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={viewMode === "servers"}
+                    className={`switch-btn${viewMode === "servers" ? " active" : ""}`}
+                    onClick={() => {
+                      setViewMode("servers");
+                      setQuery("");
+                    }}
+                  >
+                    Servers {servers.length > 0 && <span className="switch-count">{servers.length}</span>}
+                  </button>
+                </div>
 
                 {loading && (
                   <div className="loading">
@@ -392,7 +432,7 @@ export function App() {
                   </div>
                 )}
 
-                {!loading && !error && (
+                {!loading && !error && viewMode === "apps" && (
                   <div className="list">
                     {allFiltered.length === 0 && (
                       <div className="empty">Nothing named like that.</div>
@@ -415,6 +455,114 @@ export function App() {
                         )}
                       </>
                     )}
+                  </div>
+                )}
+
+                {!loading && !error && viewMode === "servers" && (
+                  <div className="servers-list">
+                    {filteredServers.length === 0 && (
+                      <div className="empty">No servers match your search.</div>
+                    )}
+                    {filteredServers.map((server) => {
+                      const isExpanded = expandedServer === server.uuid;
+                      return (
+                        <div key={server.uuid} className={`server-card${isExpanded ? " expanded" : ""}`}>
+                          <button
+                            type="button"
+                            className="server-header"
+                            onClick={() =>
+                              setExpandedServer(isExpanded ? null : server.uuid)
+                            }
+                          >
+                            <div className="server-info">
+                              <span
+                                className={server.isReachable ? "dot green" : "dot red"}
+                                title={server.isReachable ? "Reachable" : "Unreachable"}
+                              />
+                              <span className="server-name">{server.name}</span>
+                              <span className="server-ip">{server.ip}</span>
+                            </div>
+
+                            <div className="server-badges">
+                              <span className="stat-pill count">
+                                {server.totalResources} {server.totalResources === 1 ? "workload" : "workloads"}
+                              </span>
+                              {server.healthyCount > 0 && (
+                                <span className="stat-pill healthy">
+                                  {server.healthyCount} healthy
+                                </span>
+                              )}
+                              {server.unhealthyCount > 0 && (
+                                <span className="stat-pill unhealthy">
+                                  {server.unhealthyCount} unhealthy
+                                </span>
+                              )}
+                              {server.exitedCount > 0 && (
+                                <span className="stat-pill exited">
+                                  {server.exitedCount} stopped
+                                </span>
+                              )}
+                              <span className="expand-indicator">
+                                {isExpanded ? "−" : "+"}
+                              </span>
+                            </div>
+                          </button>
+
+                          {isExpanded && (
+                            <div className="server-details">
+                              <div className="server-summary-bar">
+                                <span>{server.appsCount} {server.appsCount === 1 ? "app" : "apps"}</span>
+                                <span className="sep">·</span>
+                                <span>{server.dbCount} {server.dbCount === 1 ? "database" : "databases"}</span>
+                                <span className="sep">·</span>
+                                <span>{server.servicesCount} {server.servicesCount === 1 ? "service" : "services"}</span>
+                              </div>
+
+                              {server.resources.length === 0 ? (
+                                <div className="server-no-resources">No active workloads on this server.</div>
+                              ) : (
+                                <div className="server-resource-items">
+                                  {server.resources.map((res) => {
+                                    const matchingApp = apps.find(
+                                      (a) => a.name.toLowerCase() === res.name.toLowerCase(),
+                                    );
+                                    return (
+                                      <div
+                                        key={res.uuid || res.name}
+                                        className="server-resource-item"
+                                      >
+                                        <span
+                                          className={statusDot(res.status)}
+                                          title={res.status}
+                                        />
+                                        <span className="res-name">{res.name}</span>
+                                        <span className="res-type">{res.type}</span>
+                                        {matchingApp ? (
+                                          <button
+                                            type="button"
+                                            className="open-app-btn"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              openApp(matchingApp.id);
+                                            }}
+                                          >
+                                            Open ↗
+                                          </button>
+                                        ) : (
+                                          <span className="res-status-text">
+                                            {res.status.split(":")[1] || res.status}
+                                          </span>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
